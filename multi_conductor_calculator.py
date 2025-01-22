@@ -10,6 +10,8 @@ class MultiConductorCalculator:
         self.epsilon_0 = epsilon_0
         self.epsilon_r = epsilon_r
         self.height_top = height_top
+        self.mu_0 = 4 * np.pi * 1e-7  # 真空の透磁率 (H/m)
+        self.c_squared = 1 / (self.mu_0 * self.epsilon_0)  # 光速の2乗 (m^2/s^2)
         
         self.n_gauss = 10
         self.gauss_points, self.gauss_weights = np.polynomial.legendre.leggauss(self.n_gauss)
@@ -21,6 +23,7 @@ class MultiConductorCalculator:
         self.constant = 1 / (4 * np.pi * self.epsilon)
         self.cache_influence_matrix = None  # 行列Aを再利用
         self.cache_inverse_matrix = None    # 逆行列Aのキャッシュ
+
 
     def add_conductor(self, radius: float, height: float, N_points: int, x_offset: float = 0.0):
         """円形導体追加メソッド"""
@@ -284,3 +287,17 @@ class MultiConductorCalculator:
         
         return C
 
+    def calculate_inductance_matrix(self) -> np.ndarray:
+        """インダクタンス行列を計算"""
+        C = self.calculate_capacitance_matrix()
+        C_inv = np.linalg.inv(C)  # 容量行列の逆行列
+        L = C_inv / self.c_squared
+        return L
+
+    def calculate_z_matrix(self) -> np.ndarray:
+        """特性インピーダンス行列を計算"""
+        C = self.calculate_capacitance_matrix()
+        L = self.calculate_inductance_matrix()
+        C_inv = np.linalg.inv(C)
+        Z0 = np.sqrt(np.dot(L, C_inv))  # 行列の平方根
+        return Z0
