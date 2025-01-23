@@ -201,18 +201,30 @@ class MultiConductorCalculator:
         return result * dl1 * dl2
 
     def create_influence_matrix(self) -> np.array:
-        """影響係数行列の計算"""
+        """影響係数行列の計算（対称行列を利用して計算量を削減）"""
         if self.cache_influence_matrix is None:
             total_points = sum(c['N_points'] for c in self.conductors)
             A = np.zeros((total_points, total_points))
 
             current_row = 0
             for i, conductor_i in enumerate(self.conductors):
-                current_col = 0
-                for j, conductor_j in enumerate(self.conductors):
+                current_col = current_row  # Start from the current row to avoid redundant calculations
+                for j in range(i, len(self.conductors)):
+                    conductor_j = self.conductors[j]
                     sub_matrix = self._calculate_A_matrix(conductor_i, conductor_j)
-                    A[current_row:current_row+conductor_i['N_points'],
-                    current_col:current_col+conductor_j['N_points']] = sub_matrix
+                    
+                    # Fill symmetric parts of the matrix
+                    if i == j:
+                        # Diagonal block (square sub-matrix)
+                        A[current_row:current_row+conductor_i['N_points'],
+                        current_col:current_col+conductor_j['N_points']] = sub_matrix
+                    else:
+                        # Symmetric blocks
+                        A[current_row:current_row+conductor_i['N_points'], 
+                        current_col:current_col+conductor_j['N_points']] = sub_matrix
+                        A[current_col:current_col+conductor_j['N_points'], 
+                        current_row:current_row+conductor_i['N_points']] = sub_matrix.T
+                    
                     current_col += conductor_j['N_points']
                 current_row += conductor_i['N_points']
 
