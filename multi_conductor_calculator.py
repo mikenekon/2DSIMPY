@@ -291,7 +291,7 @@ class MultiConductorCalculator:
         """インダクタンス行列を計算"""
         C = self.calculate_capacitance_matrix()
         C_inv = np.linalg.inv(C)  # 容量行列の逆行列
-        L = C_inv / self.c_squared
+        L = self.epsilon_r * C_inv / self.c_squared
         return L
 
     def calculate_z_matrix(self) -> np.ndarray:
