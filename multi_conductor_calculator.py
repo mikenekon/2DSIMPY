@@ -3,6 +3,7 @@
 import numpy as np
 from scipy import linalg
 from typing import Tuple, List, Dict
+import multiprocessing as mp
 
 class MultiConductorCalculator:
     def __init__(self, epsilon_r: float = 1.0, epsilon_0: float = 8.854e-12, height_top: float = None):
@@ -200,37 +201,54 @@ class MultiConductorCalculator:
         dl2 = np.sqrt(dx2**2 + dy2**2)
         return result * dl1 * dl2
 
+
+    def _calculate_submatrix_wrapper(self, args):
+        """マルチプロセス計算のためのラッパーメソッド"""
+        i, j, N_points_i, N_points_j = args[0], args[1], args[2], args[3]
+        conductor_i = self.conductors[i]
+        conductor_j = self.conductors[j]
+        sub_matrix = self._calculate_A_matrix(conductor_i, conductor_j)
+        return (i, j, sub_matrix)
+
     def create_influence_matrix(self) -> np.array:
-        """影響係数行列の計算（対称行列を利用して計算量を削減）"""
+        """マルチプロセスを使用した影響係数行列の計算"""
         if self.cache_influence_matrix is None:
             total_points = sum(c['N_points'] for c in self.conductors)
             A = np.zeros((total_points, total_points))
 
+            # 計算するサブマトリックスのリストを準備
+            tasks = []
+            for i, conductor_i in enumerate(self.conductors):
+                for j in range(i, len(self.conductors)):
+                    tasks.append((i, j, conductor_i['N_points'], self.conductors[j]['N_points']))
+
+            # マルチプロセス計算
+            with mp.get_context('spawn').Pool(processes=mp.cpu_count()) as pool:
+                results = pool.map(self._calculate_submatrix_wrapper, tasks)
+
+            # 結果を行列に反映
             current_row = 0
             for i, conductor_i in enumerate(self.conductors):
-                current_col = current_row  # Start from the current row to avoid redundant calculations
+                current_col = current_row
                 for j in range(i, len(self.conductors)):
-                    conductor_j = self.conductors[j]
-                    sub_matrix = self._calculate_A_matrix(conductor_i, conductor_j)
-                    
-                    # Fill symmetric parts of the matrix
-                    if i == j:
-                        # Diagonal block (square sub-matrix)
-                        A[current_row:current_row+conductor_i['N_points'],
-                        current_col:current_col+conductor_j['N_points']] = sub_matrix
-                    else:
-                        # Symmetric blocks
-                        A[current_row:current_row+conductor_i['N_points'], 
-                        current_col:current_col+conductor_j['N_points']] = sub_matrix
-                        A[current_col:current_col+conductor_j['N_points'], 
-                        current_row:current_row+conductor_i['N_points']] = sub_matrix.T
-                    
-                    current_col += conductor_j['N_points']
+                    for result in results:
+                        if result[0] == i and result[1] == j:
+                            sub_matrix = result[2]
+                            if i == j:
+                                A[current_row:current_row+conductor_i['N_points'],
+                                  current_col:current_col+sub_matrix.shape[1]] = sub_matrix
+                            else:
+                                A[current_row:current_row+conductor_i['N_points'], 
+                                  current_col:current_col+sub_matrix.shape[1]] = sub_matrix
+                                A[current_col:current_col+sub_matrix.shape[1], 
+                                  current_row:current_row+conductor_i['N_points']] = sub_matrix.T
+                            current_col += sub_matrix.shape[1]
+                            break
                 current_row += conductor_i['N_points']
 
             self.cache_influence_matrix = A
         return self.cache_influence_matrix
-
+    
     def _calculate_A_matrix(self, conductor_i: Dict, conductor_j: Dict) -> np.ndarray:
         """行列Aの計算"""
         Ni = conductor_i['N_points']
