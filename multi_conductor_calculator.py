@@ -128,6 +128,7 @@ class MultiConductorCalculator:
     def _green_function_ms(self, x: np.ndarray, y:np.ndarray,
                        x_prime: np.ndarray, y_prime: np.ndarray) -> np.ndarray:
         """MS用Green関数"""
+        eps = np.finfo(float).eps  # マシンイプシロンを使用することで安定性を大幅に工場
         epsilon = self.epsilon
         constant = self.constant
 
@@ -135,12 +136,12 @@ class MultiConductorCalculator:
 
         # 本体
         r_squared = x2 + (y - y_prime)**2
-        r_squared = np.maximum(r_squared, 1e-30)
+        r_squared = np.maximum(r_squared, eps)
         G_direct = -constant * np.log(r_squared)
 
         # 影像
         r_image_squared = x2 + (y + y_prime)**2
-        r_image_squared = np.maximum(r_image_squared, 1e-30)
+        r_image_squared = np.maximum(r_image_squared, eps)
         G_image = constant * np.log(r_image_squared)
 
         return G_direct + G_image
@@ -152,7 +153,7 @@ class MultiConductorCalculator:
         constant = self.constant
         h = self.height_top
 
-        eps = 1e-30
+        eps = np.finfo(float).eps  # マシンイプシロンを使用することで安定性を大幅に工場
 
         dx = x - x_prime
         dy = y - y_prime
