@@ -26,27 +26,29 @@ class MultiConductorCalculator:
         self.cache_inverse_matrix = None    # 逆行列Aのキャッシュ
 
 
-    def add_conductor(self, radius: float, height: float, N_points: int, x_offset: float = 0.0):
+
+    def add_conductor(self, radius: float, height: float, N_points: int, 
+                    x_offset: float = 0.0, is_gnd: bool = False):
         """円形導体追加メソッド"""
         points = self._create_circle_points(radius, height, N_points, x_offset)
-        
         conductor = {
             'type': 'circle',
             'radius': radius,
             'height': height,
             'N_points': N_points,
             'points': points,
-            'dl': self._calculate_dl_for_points(points)
+            'dl': self._calculate_dl_for_points(points),
+            'is_gnd': is_gnd
         }
         self.conductors.append(conductor)
         self.cache_influence_matrix = None
         return len(self.conductors) - 1
 
-    def add_rectangular_conductor(self, width: float, height: float, base_height: float, 
-                                N_points: int, x_offset: float = 0.0):
+    def add_rectangular_conductor(self, width: float, height: float, 
+                                base_height: float, N_points: int, 
+                                x_offset: float = 0.0, is_gnd: bool = False):
         """矩形導体追加メソッド"""
         points = self._create_rectangle_points(width, height, base_height, N_points, x_offset)
-        
         conductor = {
             'type': 'rectangle',
             'width': width,
@@ -54,13 +56,13 @@ class MultiConductorCalculator:
             'base_height': base_height,
             'N_points': len(points),
             'points': points,
-            'dl': self._calculate_dl_for_points(points)
+            'dl': self._calculate_dl_for_points(points),
+            'is_gnd': is_gnd
         }
-        
         self.conductors.append(conductor)
         self.cache_influence_matrix = None
         return len(self.conductors) - 1
-
+    
     def _calculate_dl_for_points(self, points: np.ndarray) -> np.ndarray:
         """点列に対する dl を計算（形状によらず共通）"""
         N = len(points)
@@ -283,22 +285,30 @@ class MultiConductorCalculator:
 
         return sub_matrix
 
+    # 電荷密度を計算する
     def solve_charge_density(self, voltages: List[float]) -> np.ndarray:
-        """電荷密度を計算"""
+        """電荷密度を計算（GND以外の導体に対する電圧をリストで指定する）"""
         A = self.create_influence_matrix()
-
         v = np.zeros(sum(c['N_points'] for c in self.conductors))
+        
         start_idx = 0
-        for i, conductor in enumerate(self.conductors):
-            v[start_idx:start_idx + conductor['N_points']] = voltages[i]
+        voltage_idx = 0
+        for conductor in self.conductors:
+            # GND導体は0V固定、それ以外は指定電圧を使用
+            voltage = 0.0 if conductor['is_gnd'] else voltages[voltage_idx]
+            v[start_idx:start_idx + conductor['N_points']] = voltage
+            
+            if not conductor['is_gnd']:
+                voltage_idx += 1
+                
             start_idx += conductor['N_points']
 
         if self.cache_inverse_matrix is None:
             self.cache_inverse_matrix = linalg.inv(A)
-
+        
         return self.cache_inverse_matrix @ v
 
-    def calculate_capacitance_matrix(self) -> np.ndarray:
+    def calculate_capacitance_matrix_(self) -> np.ndarray:
         """容量行列を計算"""
         n_conductors = len(self.conductors)
         C = np.zeros((n_conductors, n_conductors))
@@ -317,6 +327,33 @@ class MultiConductorCalculator:
                 C[j,i] = total_charge * conversion_factor
         
         return C
+
+    def calculate_capacitance_matrix(self) -> np.ndarray:
+        n_conductors = len(self.conductors)
+        C_full = np.zeros((n_conductors, n_conductors))
+        cumsum_points = np.cumsum([0] + [c['N_points'] for c in self.conductors])
+        
+        # すべての導体で計算
+        for i in range(n_conductors):
+            voltages = [1.0 if j == i else 0.0 for j in range(n_conductors)]
+            
+            # GNDは0V固定なので、solve_charge_densityには信号導体の電圧のみ渡す
+            signal_voltages = [v for j, v in enumerate(voltages) 
+                            if not self.conductors[j]['is_gnd']]
+            q = self.solve_charge_density(signal_voltages)
+            
+            for j in range(n_conductors):
+                q_conductor = q[cumsum_points[j]:cumsum_points[j+1]]
+                dl = self.conductors[j]['dl']
+                total_charge = np.sum(q_conductor)
+                C_full[j,i] = total_charge
+
+        # 信号導体の部分だけを抽出
+        signal_indices = [i for i, c in enumerate(self.conductors) if not c['is_gnd']]
+        C = C_full[np.ix_(signal_indices, signal_indices)]
+        
+        return C
+
 
     def calculate_inductance_matrix(self) -> np.ndarray:
         """インダクタンス行列を計算"""

@@ -42,6 +42,82 @@ class MultiConductorExporter:
             None: 'F'
         }
         
+        # 容量行列を計算        
+        C = self.calculator.calculate_capacitance_matrix()
+        if length is not None:
+            C = C * length
+        if unit_prefix in unit_factors:
+            C = C * unit_factors[unit_prefix]
+        
+        # 信号導体のみを取得
+        signal_conductors = [i for i, c in enumerate(self.calculator.conductors) if not c['is_gnd']]
+        n_signals = len(signal_conductors)
+        
+        # ヘッダー行の作成（信号導体のみ）
+        header = ['Conductor']
+        for i in range(n_signals):
+            unit_str = f'{unit_strings[unit_prefix]}/m' if length is None else f'{unit_strings[unit_prefix]}/{length}'
+            header.append(f'S{i+1} [{unit_str}]')
+        
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            
+            for i in range(n_signals):
+                row = [f'Signal {i+1}']
+                row.extend([f'{val:.6g}' for val in C[i]])
+                writer.writerow(row)
+            
+            writer.writerow([])
+            
+            self_cap = [f'{C[i,i]:.6g}' for i in range(n_signals)]
+            writer.writerow(['Self Capacitance'] + self_cap)
+            
+            mutual_cap = []
+            for i in range(n_signals):
+                total_mutual = sum(C[i,j] for j in range(n_signals) if i != j)
+                mutual_cap.append(f'{total_mutual:.6g}')
+            writer.writerow(['Total Mutual Capacitance'] + mutual_cap)
+            
+            total_cap = [f'{sum(C[i,:]):.6g}' for i in range(n_signals)]
+            writer.writerow(['Total Capacitance'] + total_cap)
+            
+
+    def export_capacitance_matrix_(self, filename: str, unit_prefix: str = None, length: float = None) -> None:
+        """
+        容量行列をCSVファイルに出力する
+        
+        Parameters:
+        -----------
+        filename : str
+            出力するCSVファイルの名前
+        unit_prefix : str, optional
+            容量値の補助単位 ('m', 'u', 'n', 'p', 'a')
+            指定しない場合は補助単位なし
+        length : float, optional
+            長さの指定（メートル単位）。指定しない場合は単位長さ（1m）あたりの容量
+        """
+        # 単位変換の係数を定義
+        unit_factors = {
+            'm': 1e3,    # milli
+            'u': 1e6,    # micro
+            'n': 1e9,    # nano
+            'p': 1e12,   # pico
+            'f': 1e15,   # femto
+            'a': 1e18    # atto
+        }
+        
+        # 単位プレフィックスの文字列を定義
+        unit_strings = {
+            'm': 'mF',
+            'u': 'μF',
+            'n': 'nF',
+            'p': 'pF',
+            'f': 'fF',
+            'a': 'aF',
+            None: 'F'
+        }
+        
         # 容量行列を計算
         C = self.calculator.calculate_capacitance_matrix()
         
