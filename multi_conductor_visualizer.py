@@ -88,7 +88,9 @@ class MultiConductorVisualizer:
                 max_height = max(max_height, c['base_height'] + c['height'])
         
         y_max = max_height * 2
-        
+
+        y_min = -y_max
+
         # ポテンシャル計算
         X, Y, potential = self.calculate_potential(
             charge_density,

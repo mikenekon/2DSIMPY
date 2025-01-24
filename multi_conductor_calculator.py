@@ -6,11 +6,20 @@ from typing import Tuple, List, Dict
 import multiprocessing as mp
 
 class MultiConductorCalculator:
-    def __init__(self, epsilon_r: float = 1.0, epsilon_0: float = 8.854e-12, height_top: float = None):
+    def __init__(self, 
+                 type: str = "FREE",   # "MS" , "SP"  , "FREE(GNDなし)"
+                 epsilon_r: float = 1.0,
+                 epsilon_0: float = 8.854e-12, 
+                 height_top: float = None):
+
+        if type == "SP" and height_top is None:
+            raise ValueError("SP requires height_top")
+         
+        self.type = type
+        self.height_top = height_top
         self.conductors = []
         self.epsilon_0 = epsilon_0
         self.epsilon_r = epsilon_r
-        self.height_top = height_top
         self.mu_0 = 4 * np.pi * 1e-7  # 真空の透磁率 (H/m)
         self.c_squared = 1 / (self.mu_0 * self.epsilon_0)  # 光速の2乗 (m^2/s^2)
         
@@ -120,12 +129,24 @@ class MultiConductorCalculator:
         return points
 
     # Green関数
-    def green_function(self, x: np.ndarray, y:np.ndarray,
-                       x_prime: np.ndarray, y_prime: np.ndarray) -> np.ndarray:
-        if self.height_top is not None:
-           return self._green_function_sp(x,y,x_prime,y_prime)
-        else:
-           return self._green_function_ms(x,y,x_prime,y_prime)
+    def green_function(self, x: np.ndarray, y: np.ndarray,
+                    x_prime: np.ndarray, y_prime: np.ndarray) -> np.ndarray:
+        if self.type == "SP":
+            return self._green_function_sp(x, y, x_prime, y_prime)
+        elif self.type == "MS":
+            return self._green_function_ms(x, y, x_prime, y_prime)
+        else:  # FREE
+            return self._green_function_free(x, y, x_prime, y_prime)
+        
+    def _green_function_free(self, x: np.ndarray, y: np.ndarray,
+                            x_prime: np.ndarray, y_prime: np.ndarray) -> np.ndarray:
+        """自己項のみのGreen関数"""
+        eps = np.finfo(float).eps
+        constant = self.constant
+        
+        r_squared = (x - x_prime)**2 + (y - y_prime)**2
+        r_squared = np.maximum(r_squared, eps)
+        return -constant * np.log(r_squared)
 
     def _green_function_ms(self, x: np.ndarray, y:np.ndarray,
                        x_prime: np.ndarray, y_prime: np.ndarray) -> np.ndarray:
