@@ -9,7 +9,6 @@ class MultiConductorCalculator:
     def __init__(self, 
                  type: str = "FREE",   # "MS" , "SP"  , "FREE(GNDなし)"
                  epsilon_r: float = 1.0,
-                 epsilon_0: float = 8.854e-12, 
                  height_top: float = None):
 
         if type == "SP" and height_top is None:
@@ -18,7 +17,7 @@ class MultiConductorCalculator:
         self.type = type
         self.height_top = height_top
         self.conductors = []
-        self.epsilon_0 = epsilon_0
+        self.epsilon_0 = 8.854e-12    # 真空中の誘電率
         self.epsilon_r = epsilon_r
         self.mu_0 = 4 * np.pi * 1e-7  # 真空の透磁率 (H/m)
         self.c_squared = 1 / (self.mu_0 * self.epsilon_0)  # 光速の2乗 (m^2/s^2)
