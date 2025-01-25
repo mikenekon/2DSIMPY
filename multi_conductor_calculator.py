@@ -8,17 +8,38 @@ import multiprocessing as mp
 class MultiConductorCalculator:
     def __init__(self, 
                  type: str = "FREE",   # "MS" , "SP"  , "FREE(GNDなし)"
-                 epsilon_r: float = 1.0,
-                 height_top: float = None):
-
-        if type == "SP" and height_top is None:
-            raise ValueError("SP requires height_top")
-         
+                 epsilons: List[float] = None,  # [ε1, ε2, ...]
+                 heights: List[float] = None):  # [h1, h2, ...]
+        """
+        Args:
+            epsilons: List of relative permittivities [ε1, ε2, ...]
+            heights: List of heights from Y=0 [h1, h2, ...]
+        """
         self.type = type
-        self.height_top = height_top
+
+        # epsilonと高さをセット。最後の高さを省略した場合は無限大とする
+        if epsilons is None:
+            self.epsilons = [1.0]
+            self.heights = [float('inf')]
+        else:
+            self.epsilons = epsilons
+            if heights is None:
+                self.heights = [float('inf')]
+            elif len(heights) == len(epsilons) - 1:
+                self.heights = heights + [float('inf')]
+            elif len(heights) == len(epsilons):
+                self.heights = heights
+            else:
+                raise ValueError("heights must be same length as epsilons or one less")
+
+        self.height_top = self.heights[-1]
+        self.epsilon_r = self.epsilons[0]
+                
+        self.type = type
+        self.height_top = self.heights[-1] if heights else float('inf')
         self.conductors = []
         self.epsilon_0 = 8.854e-12    # 真空中の誘電率
-        self.epsilon_r = epsilon_r
+        self.epsilon_r = self.epsilons[0] if epsilons else 1.0  # 最初の層の誘電率を設定
         self.mu_0 = 4 * np.pi * 1e-7  # 真空の透磁率 (H/m)
         self.c_squared = 1 / (self.mu_0 * self.epsilon_0)  # 光速の2乗 (m^2/s^2)
         
