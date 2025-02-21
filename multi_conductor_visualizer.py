@@ -143,66 +143,81 @@ class MultiConductorVisualizer:
         plt.show()
     
     ###########  電気力線表示 ##############
-    # 開発中。　円ではなく点の集合でポリゴンにして内部かどうかを判定する必要があると思われる
     def is_inside_conductor(self, x: float, y: float, margin: float = 1e-9) -> bool:
-        """Check if point (x,y) is inside any conductor"""
+        """Check if point (x,y) is inside any conductor with improved accuracy"""
         for conductor in self.calculator.conductors:
             if conductor['type'] == 'circle':
-                center_x = conductor['points'][0,0]  # 円の中心のx座標
-                center_y = conductor['height']       # 円の中心のy座標
-                if np.sqrt((x - center_x)**2 + (y - center_y)**2) <= conductor['radius'] + margin:
+                # 円形導体の場合は中心からの距離で判定
+                center_x = conductor['points'][0,0]  # 円の中心のx座標ではなく
+                center_y = conductor['height']       # 実際の中心座標を計算
+                radius = conductor['radius']
+                
+                # 中心からの距離を計算
+                distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                if distance <= radius + margin:
                     return True
-            else:  # rectangle
+            else:  # rectangle または多角形
+                # Point-in-Polygon アルゴリズムを使用
                 points = conductor['points']
-                x_min = np.min(points[:,0]) - margin
-                x_max = np.max(points[:,0]) + margin
-                y_min = np.min(points[:,1]) - margin
-                y_max = np.max(points[:,1]) + margin
-                if x_min <= x <= x_max and y_min <= y <= y_max:
+                n = len(points)
+                inside = False
+                
+                # Ray casting algorithm
+                p1x, p1y = points[0]
+                for i in range(n + 1):
+                    p2x, p2y = points[i % n]
+                    if y > min(p1y, p2y) and y <= max(p1y, p2y) and x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+                    p1x, p1y = p2x, p2y
+                
+                if inside:
                     return True
+                
+                # マージン分を考慮（簡易的）
+                if min(np.linalg.norm(np.array([x, y]) - points[i]) for i in range(n)) <= margin:
+                    return True
+        
         return False
 
-    def _generate_start_points(self, n_lines: int, charge_density: np.ndarray) -> np.ndarray:
-        """Generate starting points for field lines based on charge distribution"""
-        start_points = []
-        offset = 2e-9  # 導体表面からのオフセットを大きめに
 
+    def _generate_start_points(self, n_lines: int, charge_density: np.ndarray) -> np.ndarray:
+        """Generate starting points for field lines with uniform distribution"""
+        start_points = []
+        offset = 3e-9  # 導体表面からのオフセット
+        
+        # 導体の数を取得
+        n_conductors = len(self.calculator.conductors)
+        
+        # 各導体あたりの電気力線数を計算（均等に割り当て）
+        lines_per_conductor = max(8, n_lines // n_conductors)
+        
         # 無限遠GNDノードがある場合は対応
         has_infinity_gnd = hasattr(self.calculator, 'has_infinity_gnd') and self.calculator.has_infinity_gnd
         
         # 実際の導体ポイント数に対応する電荷密度を準備
         if has_infinity_gnd and len(charge_density) > sum(c['N_points'] for c in self.calculator.conductors):
-            # 無限遠ノードを除いた電荷密度を使用
-            actual_charge_density = charge_density[:-1]
+            charge_density_adjusted = charge_density[:-1]
         else:
-            actual_charge_density = charge_density
+            charge_density_adjusted = charge_density
         
-        # 導体のdlの連結配列を作成
-        all_dls = np.concatenate([c['dl'] for c in self.calculator.conductors])
-        
-        # 必要に応じて長さを調整
-        if len(actual_charge_density) > len(all_dls):
-            actual_charge_density = actual_charge_density[:len(all_dls)]
-        elif len(actual_charge_density) < len(all_dls):
-            all_dls = all_dls[:len(actual_charge_density)]
-        
-        # 合計重みを計算
-        total_abs_charge_weights = np.sum(np.abs(actual_charge_density * all_dls))
-
         start_idx = 0
-        for conductor in self.calculator.conductors:
+        for conductor_idx, conductor in enumerate(self.calculator.conductors):
             end_idx = start_idx + conductor['N_points']
             
-            # 無限遠ノード対応: charge_density配列の境界チェック
-            if end_idx > len(actual_charge_density):
-                end_idx = len(actual_charge_density)
+            # 配列長の確認
+            if end_idx > len(charge_density_adjusted):
+                end_idx = len(charge_density_adjusted)
                 
-            conductor_charge = actual_charge_density[start_idx:end_idx]
+            conductor_charge = charge_density_adjusted[start_idx:end_idx]
             points = conductor['points']
             
             if end_idx > start_idx:  # ポイントがある場合のみ処理
                 # 導体の電荷の符号を確認
-                total_charge = np.sum(conductor_charge * conductor['dl'][:len(conductor_charge)])
+                dl_segment = conductor['dl'][:len(conductor_charge)]
+                total_charge = np.sum(conductor_charge * dl_segment)
                 if abs(total_charge) < 1e-20:  # 電荷がほぼゼロの場合はスキップ
                     start_idx = end_idx
                     continue
@@ -210,45 +225,83 @@ class MultiConductorVisualizer:
                 # 電荷の符号に応じて法線ベクトルの向きを決定
                 charge_sign = np.sign(total_charge)
                 
-                # 電荷密度の絶対値に比例した数の開始点を生成
-                charge_weights = np.abs(conductor_charge * conductor['dl'][:len(conductor_charge)])
-                total_weight = np.sum(charge_weights)
-                if total_weight > 0:
-                    n_points = max(1, int(n_lines * total_weight / total_abs_charge_weights))
-                    
-                    # 電荷密度の大きい場所により多くの開始点を配置
-                    probabilities = charge_weights / total_weight
-                    indices = np.random.choice(len(conductor_charge), size=n_points, p=probabilities)
+                # 導体形状ごとに均等に分布
+                if conductor['type'] == 'circle':
+                    # 円の場合は角度に基づいて均等に分布
+                    theta = np.linspace(0, 2*np.pi, lines_per_conductor, endpoint=False)
+                    for angle in theta:
+                        # 円周上の点を計算
+                        radius = conductor['radius']
+                        center_x = conductor['points'][0,0]  # 中心x座標
+                        center_y = conductor['height']       # 中心y座標
+                        
+                        pt_x = center_x + radius * np.cos(angle)
+                        pt_y = center_y + radius * np.sin(angle)
+                        
+                        # 法線ベクトル（中心から外向き）
+                        normal_x = np.cos(angle)
+                        normal_y = np.sin(angle)
+                        
+                        # 電荷の符号に応じて調整
+                        normal = np.array([normal_x, normal_y]) * charge_sign
+                        
+                        # 開始点の位置を計算
+                        start_point = np.array([pt_x, pt_y]) + normal * offset
+                        
+                        # 他の導体と重ならないことを確認
+                        if not self.is_inside_conductor(start_point[0], start_point[1]):
+                            start_points.append(start_point)
+                else:
+                    # 矩形/多角形の場合は均等に点を配置
+                    n_points = len(points)
+                    # 辺の数に関わらず均等な間隔で点を選択
+                    indices = np.linspace(0, n_points - 1, lines_per_conductor, dtype=int)
                     
                     for idx in indices:
-                        # 法線ベクトルの計算
-                        next_idx = (idx + 1) % len(points)
-                        prev_idx = idx - 1 if idx > 0 else len(points) - 1
+                        # 法線ベクトル計算
+                        next_idx = (idx + 1) % n_points
+                        prev_idx = (idx - 1 + n_points) % n_points
                         
                         # 前後の点から接線ベクトルを計算
-                        dx = points[next_idx,0] - points[prev_idx,0]
-                        dy = points[next_idx,1] - points[prev_idx,1]
-                        length = np.sqrt(dx*dx + dy*dy)
+                        tangent_x = points[next_idx,0] - points[prev_idx,0]
+                        tangent_y = points[next_idx,1] - points[prev_idx,1]
+                        length = np.sqrt(tangent_x**2 + tangent_y**2)
                         
                         if length > 0:
-                            # 法線ベクトル (接線ベクトルを90度回転)
-                            normal = np.array([-dy/length, dx/length])
+                            # 法線ベクトル（接線ベクトルを90度回転）
+                            normal_x = -tangent_y / length
+                            normal_y = tangent_x / length
+                            
+                            # 外向き判定：導体の中心から見て外側を向いているか
+                            center_x = np.mean(points[:,0])
+                            center_y = np.mean(points[:,1])
+                            point_to_center_x = center_x - points[idx,0]
+                            point_to_center_y = center_y - points[idx,1]
+                            
+                            # 法線と中心へのベクトルの内積が正なら内向き
+                            dot_product = normal_x * point_to_center_x + normal_y * point_to_center_y
+                            if dot_product > 0:  # 内向きなら反転
+                                normal_x = -normal_x
+                                normal_y = -normal_y
+                            
                             # 電荷の符号に応じて法線の向きを調整
-                            normal *= charge_sign
+                            normal_x *= charge_sign
+                            normal_y *= charge_sign
                             
                             # 開始点の位置を計算
-                            start_point = points[idx] + normal * offset
+                            start_x = points[idx,0] + normal_x * offset
+                            start_y = points[idx,1] + normal_y * offset
                             
                             # 開始点が他の導体の内部に入っていないことを確認
-                            if not self.is_inside_conductor(start_point[0], start_point[1]):
-                                start_points.append(start_point)
+                            if not self.is_inside_conductor(start_x, start_y):
+                                start_points.append(np.array([start_x, start_y]))
                 
             start_idx = end_idx
         
         return np.array(start_points) if start_points else np.array([])
 
-    def plot_electric_field_lines(self, charge_density: np.ndarray, n_lines: int = 20):
-        """Plot electric field lines using streamplot"""
+    def plot_electric_field_lines(self, charge_density: np.ndarray, n_lines: int = 40):
+        """Plot electric field lines using streamplot with improved visualization"""
         scale = 1e9  # Convert to nanometers for display
         
         # 導体のサイズに基づいてマージンを計算
@@ -282,8 +335,8 @@ class MultiConductorVisualizer:
             
             y_max = max_height * 2
         
-        # Create grid for field calculation
-        nx, ny = 50, 50
+        # Create grid for field calculation - より細かいグリッドを使用
+        nx, ny = 80, 80  # グリッド解像度を上げる
         x = np.linspace(x_min, x_max, nx)
         y = np.linspace(y_min, y_max, ny)
         X, Y = np.meshgrid(x, y)
@@ -311,17 +364,17 @@ class MultiConductorVisualizer:
         contour = ax.contourf(X*scale, Y*scale, potential, levels=20, cmap='RdBu_r', alpha=0.3)
         plt.colorbar(contour, label='Potential [V]')
         
-        # Generate start points
+        # Generate start points with improved algorithm
         start_points = self._generate_start_points(n_lines, charge_density)
         if len(start_points) > 0:
-            # Plot electric field lines
+            # Plot electric field lines with improved parameters
             streamplot = ax.streamplot(X*scale, Y*scale, Ex, Ey, 
-                                    density=0.5,
+                                    density=2.0,  # 密度を上げる
                                     color='black',
                                     linewidth=1,
-                                    arrowsize=1.5,
+                                    arrowsize=1.2,
                                     start_points=start_points*scale,
-                                    integration_direction='both')
+                                    integration_direction='both')  # 両方向に線を引く
         
         # Draw conductors
         for conductor in self.calculator.conductors:
@@ -347,7 +400,7 @@ class MultiConductorVisualizer:
         plt.title(title)
         
         plt.show()
-    
+            
 
     def calculate_potential(self, charge_density: np.ndarray, x_range: tuple, y_range: tuple, n_points: int = 100) -> np.ndarray:
       x = np.linspace(x_range[0], x_range[1], n_points)
@@ -369,11 +422,12 @@ class MultiConductorVisualizer:
 
       return X, Y, potential
 
+
     def calculate_electric_field(self, x: float, y: float, charge_density: np.ndarray) -> Tuple[float, float]:
-        """Calculate electric field at point (x,y)"""
-        # 導体内部の場合は電界=0を返す
+        """Calculate electric field at point (x,y) with improved handling"""
+        # 導体内部判定を改善したメソッドを使用
         if self.is_inside_conductor(x, y):
-            return 0.0, 0.0
+            return 0.0, 0.0  # 導体内部は電界ゼロ
 
         Ex = 0.0
         Ey = 0.0
