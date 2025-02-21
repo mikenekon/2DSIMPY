@@ -13,7 +13,7 @@ class MultiConductorCalculator:
 
         if type == "SP" and height_top is None:
             raise ValueError("SP requires height_top")
-         
+
         self.type = type
         self.height_top = height_top
         self.conductors = []
@@ -26,6 +26,9 @@ class MultiConductorCalculator:
         self.gauss_points, self.gauss_weights = np.polynomial.legendre.leggauss(self.n_gauss)
         self.gauss_points = (self.gauss_points + 1) / 2
         self.gauss_weights = self.gauss_weights / 2
+
+        # FREE タイプの場合は無限遠GNDノードのフラグを追加
+        self.has_infinity_gnd = (type == "FREE")
 
         # 高速化のために定数の計算をクラス内で保持
         self.epsilon = self.epsilon_0 * self.epsilon_r
@@ -233,10 +236,15 @@ class MultiConductorCalculator:
         sub_matrix = self._calculate_A_matrix(conductor_i, conductor_j)
         return (i, j, sub_matrix)
 
+
     def create_influence_matrix(self) -> np.array:
         """マルチプロセスを使用した影響係数行列の計算"""
         if self.cache_influence_matrix is None:
             total_points = sum(c['N_points'] for c in self.conductors)
+            # FREE タイプの場合は、無限遠GNDのために1行1列追加
+            if self.has_infinity_gnd:
+                total_points += 1
+                
             A = np.zeros((total_points, total_points))
 
             # 計算するサブマトリックスのリストを準備
@@ -269,9 +277,20 @@ class MultiConductorCalculator:
                             break
                 current_row += conductor_i['N_points']
 
+            # FREE タイプの場合、無限遠GNDノードに関連する行と列を追加
+            if self.has_infinity_gnd:
+                # 無限遠ノードは他のすべてのノードと弱く結合
+                inf_idx = total_points - 1
+                # 例: 非常に小さい値で結合（調整が必要かもしれません）
+                small_coupling = 1e-10
+                A[0:inf_idx, inf_idx] = small_coupling
+                A[inf_idx, 0:inf_idx] = small_coupling
+                # 対角要素は調整が必要かもしれませんが、まずは定数値から始める
+                A[inf_idx, inf_idx] = 1.0  
+
             self.cache_influence_matrix = A
         return self.cache_influence_matrix
-    
+
     def _calculate_A_matrix(self, conductor_i: Dict, conductor_j: Dict) -> np.ndarray:
         """行列Aの計算"""
         Ni = conductor_i['N_points']
@@ -309,7 +328,14 @@ class MultiConductorCalculator:
     def solve_charge_density(self, voltages: List[float]) -> np.ndarray:
         """電荷密度を計算（GND以外の導体に対する電圧をリストで指定する）"""
         A = self.create_influence_matrix()
-        v = np.zeros(sum(c['N_points'] for c in self.conductors))
+        
+        # 電圧ベクトルの準備
+        total_points = sum(c['N_points'] for c in self.conductors)
+        if self.has_infinity_gnd:
+            # 無限遠ノードを含める場合
+            v = np.zeros(total_points + 1)
+        else:
+            v = np.zeros(total_points)
         
         start_idx = 0
         voltage_idx = 0
@@ -322,29 +348,49 @@ class MultiConductorCalculator:
                 voltage_idx += 1
                 
             start_idx += conductor['N_points']
-
+        
+        # FREE タイプの場合、無限遠ノードの電圧は0V
+        if self.has_infinity_gnd:
+            v[-1] = 0.0
+        
         if self.cache_inverse_matrix is None:
             self.cache_inverse_matrix = linalg.inv(A)
         
         return self.cache_inverse_matrix @ v
 
-    def calculate_capacitance_matrix_(self) -> np.ndarray:
+
+    def calculate_capacitance_matrix(self) -> np.ndarray:
         """容量行列を計算"""
         n_conductors = len(self.conductors)
-        C = np.zeros((n_conductors, n_conductors))
+        C_full = np.zeros((n_conductors, n_conductors))
         
+        # 点の累積インデックスを計算
         cumsum_points = np.cumsum([0] + [c['N_points'] for c in self.conductors])
-        conversion_factor = 1
         
+        # すべての導体で計算
         for i in range(n_conductors):
             voltages = [1.0 if j == i else 0.0 for j in range(n_conductors)]
-            q = self.solve_charge_density(voltages)
+            
+            # GNDは0V固定なので、solve_charge_densityには信号導体の電圧のみ渡す
+            signal_voltages = [v for j, v in enumerate(voltages) 
+                            if not self.conductors[j]['is_gnd']]
+            q = self.solve_charge_density(signal_voltages)
             
             for j in range(n_conductors):
-                q_conductor = q[cumsum_points[j]:cumsum_points[j+1]]
+                # FREE タイプで無限遠GNDがある場合、インデックスを調整
+                if self.has_infinity_gnd and cumsum_points[j+1] > len(q) - 1:
+                    # 無限遠ノードは除外して計算
+                    q_conductor = q[cumsum_points[j]:len(q)-1]
+                else:
+                    q_conductor = q[cumsum_points[j]:cumsum_points[j+1]]
+                    
                 dl = self.conductors[j]['dl']
-                total_charge = sum(q_conductor)
-                C[j,i] = total_charge * conversion_factor
+                total_charge = np.sum(q_conductor)
+                C_full[j,i] = total_charge
+
+        # 信号導体の部分だけを抽出
+        signal_indices = [i for i, c in enumerate(self.conductors) if not c['is_gnd']]
+        C = C_full[np.ix_(signal_indices, signal_indices)]
         
         return C
 

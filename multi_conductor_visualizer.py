@@ -8,15 +8,24 @@ class MultiConductorVisualizer:
     def __init__(self, calculator: MultiConductorCalculator):
         self.calculator = calculator
 
+
     def plot_chage_distribution(self, charge_density: np.ndarray):
         scale = 1e9
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
+        # FREE タイプで無限遠ノードがある場合のフラグ
+        has_infinity_gnd = self.calculator.has_infinity_gnd
+        
         start_idx = 0
         for i, conductor in enumerate(self.calculator.conductors):
             end_idx = start_idx + conductor['N_points']
+            
+            # 無限遠ノード対応: charge_density配列の境界チェック
+            if has_infinity_gnd and end_idx > len(charge_density) - 1:
+                end_idx = len(charge_density) - 1
+                
             conductor_charge_density = charge_density[start_idx:end_idx]
-
+            
             print(f"Conductor {i+1} charge density range:",
                 np.min(conductor_charge_density),
                 np.max(conductor_charge_density))
@@ -50,7 +59,12 @@ class MultiConductorVisualizer:
                                                 vmax=np.max(np.abs(conductor_charge))),
                                 alpha=0.6)
             start_idx = end_idx
-
+        
+        # 無限遠ノードの電荷も表示（オプション）
+        if has_infinity_gnd:
+            inf_charge = charge_density[-1]
+            print(f"Infinity GND node charge: {inf_charge}")
+        
         ax1.set_xlabel('Angle [rad]')
         ax1.set_ylabel('Charge [C]')
         ax1.grid(True)
@@ -140,62 +154,87 @@ class MultiConductorVisualizer:
                     return True
         return False
 
-
-
     def _generate_start_points(self, n_lines: int, charge_density: np.ndarray) -> np.ndarray:
         """Generate starting points for field lines based on charge distribution"""
         start_points = []
         offset = 2e-9  # 導体表面からのオフセットを大きめに
 
+        # 無限遠GNDノードがある場合は対応
+        has_infinity_gnd = hasattr(self.calculator, 'has_infinity_gnd') and self.calculator.has_infinity_gnd
+        
+        # 実際の導体ポイント数に対応する電荷密度を準備
+        if has_infinity_gnd and len(charge_density) > sum(c['N_points'] for c in self.calculator.conductors):
+            # 無限遠ノードを除いた電荷密度を使用
+            actual_charge_density = charge_density[:-1]
+        else:
+            actual_charge_density = charge_density
+        
+        # 導体のdlの連結配列を作成
+        all_dls = np.concatenate([c['dl'] for c in self.calculator.conductors])
+        
+        # 必要に応じて長さを調整
+        if len(actual_charge_density) > len(all_dls):
+            actual_charge_density = actual_charge_density[:len(all_dls)]
+        elif len(actual_charge_density) < len(all_dls):
+            all_dls = all_dls[:len(actual_charge_density)]
+        
+        # 合計重みを計算
+        total_abs_charge_weights = np.sum(np.abs(actual_charge_density * all_dls))
+
         start_idx = 0
         for conductor in self.calculator.conductors:
             end_idx = start_idx + conductor['N_points']
-            conductor_charge = charge_density[start_idx:end_idx]
+            
+            # 無限遠ノード対応: charge_density配列の境界チェック
+            if end_idx > len(actual_charge_density):
+                end_idx = len(actual_charge_density)
+                
+            conductor_charge = actual_charge_density[start_idx:end_idx]
             points = conductor['points']
             
-            # 導体の電荷の符号を確認
-            total_charge = np.sum(conductor_charge * conductor['dl'])
-            if abs(total_charge) < 1e-20:  # 電荷がほぼゼロの場合はスキップ
-                start_idx = end_idx
-                continue
-                
-            # 電荷の符号に応じて法線ベクトルの向きを決定
-            charge_sign = np.sign(total_charge)
-            
-            # 電荷密度の絶対値に比例した数の開始点を生成
-            charge_weights = np.abs(conductor_charge * conductor['dl'])
-            total_weight = np.sum(charge_weights)
-            if total_weight > 0:
-                n_points = max(1, int(n_lines * total_weight / 
-                            np.sum(np.abs(charge_density * np.concatenate([c['dl'] for c in self.calculator.conductors])))))
-                
-                # 電荷密度の大きい場所により多くの開始点を配置
-                probabilities = charge_weights / total_weight
-                indices = np.random.choice(len(points), size=n_points, p=probabilities)
-                
-                for idx in indices:
-                    # 法線ベクトルの計算
-                    next_idx = (idx + 1) % len(points)
-                    prev_idx = idx - 1 if idx > 0 else len(points) - 1
+            if end_idx > start_idx:  # ポイントがある場合のみ処理
+                # 導体の電荷の符号を確認
+                total_charge = np.sum(conductor_charge * conductor['dl'][:len(conductor_charge)])
+                if abs(total_charge) < 1e-20:  # 電荷がほぼゼロの場合はスキップ
+                    start_idx = end_idx
+                    continue
                     
-                    # 前後の点から接線ベクトルを計算
-                    dx = points[next_idx,0] - points[prev_idx,0]
-                    dy = points[next_idx,1] - points[prev_idx,1]
-                    length = np.sqrt(dx*dx + dy*dy)
+                # 電荷の符号に応じて法線ベクトルの向きを決定
+                charge_sign = np.sign(total_charge)
+                
+                # 電荷密度の絶対値に比例した数の開始点を生成
+                charge_weights = np.abs(conductor_charge * conductor['dl'][:len(conductor_charge)])
+                total_weight = np.sum(charge_weights)
+                if total_weight > 0:
+                    n_points = max(1, int(n_lines * total_weight / total_abs_charge_weights))
                     
-                    if length > 0:
-                        # 法線ベクトル (接線ベクトルを90度回転)
-                        normal = np.array([-dy/length, dx/length])
-                        # 電荷の符号に応じて法線の向きを調整
-                        normal *= charge_sign
+                    # 電荷密度の大きい場所により多くの開始点を配置
+                    probabilities = charge_weights / total_weight
+                    indices = np.random.choice(len(conductor_charge), size=n_points, p=probabilities)
+                    
+                    for idx in indices:
+                        # 法線ベクトルの計算
+                        next_idx = (idx + 1) % len(points)
+                        prev_idx = idx - 1 if idx > 0 else len(points) - 1
                         
-                        # 開始点の位置を計算
-                        start_point = points[idx] + normal * offset
+                        # 前後の点から接線ベクトルを計算
+                        dx = points[next_idx,0] - points[prev_idx,0]
+                        dy = points[next_idx,1] - points[prev_idx,1]
+                        length = np.sqrt(dx*dx + dy*dy)
                         
-                        # 開始点が他の導体の内部に入っていないことを確認
-                        if not self.is_inside_conductor(start_point[0], start_point[1]):
-                            start_points.append(start_point)
-            
+                        if length > 0:
+                            # 法線ベクトル (接線ベクトルを90度回転)
+                            normal = np.array([-dy/length, dx/length])
+                            # 電荷の符号に応じて法線の向きを調整
+                            normal *= charge_sign
+                            
+                            # 開始点の位置を計算
+                            start_point = points[idx] + normal * offset
+                            
+                            # 開始点が他の導体の内部に入っていないことを確認
+                            if not self.is_inside_conductor(start_point[0], start_point[1]):
+                                start_points.append(start_point)
+                
             start_idx = end_idx
         
         return np.array(start_points) if start_points else np.array([])
@@ -308,9 +347,17 @@ class MultiConductorVisualizer:
         Ey = 0.0
         epsilon = self.calculator.epsilon_0 * self.calculator.epsilon_r
         
+
+        has_infinity_gnd = self.calculator.has_infinity_gnd
+        
         start_idx = 0
         for conductor in self.calculator.conductors:
             end_idx = start_idx + conductor['N_points']
+            
+            # 無限遠ノード対応: charge_density配列の境界チェック
+            if has_infinity_gnd and end_idx > len(charge_density) - 1:
+                end_idx = len(charge_density) - 1
+                
             conductor_charge = charge_density[start_idx:end_idx]
             
             for xi, yi, qi, dli in zip(conductor['points'][:, 0], 
@@ -334,6 +381,13 @@ class MultiConductorVisualizer:
                 Ey -= E * dy_image / r2_image
                 
             start_idx = end_idx
+
+        # 無限遠ノードの影響を計算（オプション）
+        if has_infinity_gnd:
+            inf_charge = charge_density[-1]
+            # 無限遠からの影響はログ関数で近似できますが、
+            # 実装には理論的な検討が必要です
+            # potential += inf_charge * some_function_of_distance()
             
         return Ex, Ey
     
