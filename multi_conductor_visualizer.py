@@ -73,9 +73,14 @@ class MultiConductorVisualizer:
         ax2.set_xlabel('x [nm]')  # 単位を変更
         ax2.set_ylabel('y [nm]')  # 単位を変更
         ax2.grid(True)
+
+        # 変更後:
         colorbar = plt.colorbar(scatter, ax=ax2, label='Charge [C]')
-        ax2.axhline(y=0, color='k', linestyle='--', label='GND')
+        # FREEタイプの場合はGND線を描画しない
+        if not hasattr(self.calculator, 'type') or self.calculator.type != "FREE":
+            ax2.axhline(y=0, color='k', linestyle='--', label='GND')
         ax2.legend()
+
         ax2.axis('equal')
 
         plt.tight_layout()
@@ -126,7 +131,10 @@ class MultiConductorVisualizer:
             ax.plot([points[-1, 0] * scale, points[0, 0] * scale], 
                     [points[-1, 1] * scale, points[0, 1] * scale], 'k-', linewidth=2)
 
-        ax.axhline(y=0, color='k', linestyle='--', label='GND')
+        # FREEタイプの場合はGND線を描画しない
+        if not hasattr(self.calculator, 'type') or self.calculator.type != "FREE":
+            ax.axhline(y=0, color='k', linestyle='--', label='GND')
+    
         ax.set_xlabel('x [nm]')
         ax.set_ylabel('y [nm]')
         ax.grid(True)
@@ -249,16 +257,30 @@ class MultiConductorVisualizer:
 
         x_min = min([min(c['points'][:,0]) for c in self.calculator.conductors]) - margin_x
         x_max = max([max(c['points'][:,0]) for c in self.calculator.conductors]) + margin_x
-        y_min = 0
-
-        max_height = 0
-        for c in self.calculator.conductors:
-            if c['type'] == 'circle':
-                max_height = max(max_height, c['height'] + c['radius'])
-            else:  # rectangle
-                max_height = max(max_height, c['base_height'] + c['height'])
         
-        y_max = max_height * 2
+        # FREEタイプの場合は上下対称の表示領域にする
+        if hasattr(self.calculator, 'type') and self.calculator.type == "FREE":
+            max_height = 0
+            for c in self.calculator.conductors:
+                if c['type'] == 'circle':
+                    max_height = max(max_height, c['height'] + c['radius'])
+                else:  # rectangle
+                    max_height = max(max_height, c['base_height'] + c['height'])
+            
+            y_margin = max_height * 1.5
+            y_min = -y_margin
+            y_max = y_margin
+        else:
+            # MSやSPタイプの場合は従来通り
+            y_min = 0
+            max_height = 0
+            for c in self.calculator.conductors:
+                if c['type'] == 'circle':
+                    max_height = max(max_height, c['height'] + c['radius'])
+                else:  # rectangle
+                    max_height = max(max_height, c['base_height'] + c['height'])
+            
+            y_max = max_height * 2
         
         # Create grid for field calculation
         nx, ny = 50, 50
@@ -294,12 +316,12 @@ class MultiConductorVisualizer:
         if len(start_points) > 0:
             # Plot electric field lines
             streamplot = ax.streamplot(X*scale, Y*scale, Ex, Ey, 
-                                    density=0.5,  # 密度を下げる
+                                    density=0.5,
                                     color='black',
                                     linewidth=1,
                                     arrowsize=1.5,
                                     start_points=start_points*scale,
-                                    integration_direction='both')  # 両方向に線を引く
+                                    integration_direction='both')
         
         # Draw conductors
         for conductor in self.calculator.conductors:
@@ -308,14 +330,24 @@ class MultiConductorVisualizer:
             ax.plot([points[-1, 0]*scale, points[0, 0]*scale],
                     [points[-1, 1]*scale, points[0, 1]*scale], 'k-', linewidth=2)
         
-        ax.axhline(y=0, color='k', linestyle='--', label='GND')
+        # FREEタイプ以外の場合のみGND面を描画
+        if not hasattr(self.calculator, 'type') or self.calculator.type != "FREE":
+            ax.axhline(y=0, color='k', linestyle='--', label='GND')
+        
         ax.set_xlabel('x [nm]')
         ax.set_ylabel('y [nm]')
         ax.grid(True)
         ax.axis('equal')
-        plt.title('Electric Field Lines and Potential Distribution')
+        
+        # タイトルにモデルタイプを含める
+        if hasattr(self.calculator, 'type'):
+            title = f'Electric Field Lines and Potential Distribution ({self.calculator.type} model)'
+        else:
+            title = 'Electric Field Lines and Potential Distribution'
+        plt.title(title)
+        
         plt.show()
-
+    
 
     def calculate_potential(self, charge_density: np.ndarray, x_range: tuple, y_range: tuple, n_points: int = 100) -> np.ndarray:
       x = np.linspace(x_range[0], x_range[1], n_points)
@@ -336,7 +368,7 @@ class MultiConductorVisualizer:
           start_idx = end_idx
 
       return X, Y, potential
-    
+
     def calculate_electric_field(self, x: float, y: float, charge_density: np.ndarray) -> Tuple[float, float]:
         """Calculate electric field at point (x,y)"""
         # 導体内部の場合は電界=0を返す
@@ -347,23 +379,31 @@ class MultiConductorVisualizer:
         Ey = 0.0
         epsilon = self.calculator.epsilon_0 * self.calculator.epsilon_r
         
-
-        has_infinity_gnd = self.calculator.has_infinity_gnd
+        # 無限遠GNDノードがある場合は対応
+        has_infinity_gnd = hasattr(self.calculator, 'has_infinity_gnd') and self.calculator.has_infinity_gnd
+        
+        # 実際の導体ポイント数に対応する電荷密度を準備
+        if has_infinity_gnd and len(charge_density) > sum(c['N_points'] for c in self.calculator.conductors):
+            # 無限遠ノードを除いた電荷密度を使用
+            actual_charge_density = charge_density[:-1]
+        else:
+            actual_charge_density = charge_density
         
         start_idx = 0
         for conductor in self.calculator.conductors:
             end_idx = start_idx + conductor['N_points']
             
-            # 無限遠ノード対応: charge_density配列の境界チェック
-            if has_infinity_gnd and end_idx > len(charge_density) - 1:
-                end_idx = len(charge_density) - 1
+            # 配列長の確認
+            if end_idx > len(actual_charge_density):
+                end_idx = len(actual_charge_density)
                 
-            conductor_charge = charge_density[start_idx:end_idx]
+            conductor_charge = actual_charge_density[start_idx:end_idx]
             
-            for xi, yi, qi, dli in zip(conductor['points'][:, 0], 
-                                    conductor['points'][:, 1],
-                                    conductor_charge,
-                                    conductor['dl']):
+            for i, (xi, yi, qi) in enumerate(zip(conductor['points'][:end_idx-start_idx, 0], 
+                                            conductor['points'][:end_idx-start_idx, 1],
+                                            conductor_charge)):
+                dli = conductor['dl'][i] if i < len(conductor['dl']) else 0
+                
                 dx = x - xi
                 dy = y - yi
                 r2 = dx*dx + dy*dy
@@ -374,22 +414,20 @@ class MultiConductorVisualizer:
                 Ex += E * dx / r2
                 Ey += E * dy / r2
                 
-                # Image charge contribution
-                dy_image = y + yi
-                r2_image = dx*dx + dy_image*dy_image
-                Ex -= E * dx / r2_image
-                Ey -= E * dy_image / r2_image
+                # MSタイプの場合のみイメージ法の影響を追加
+                if hasattr(self.calculator, 'type') and self.calculator.type == "MS":
+                    dy_image = y + yi
+                    r2_image = dx*dx + dy_image*dy_image
+                    Ex -= E * dx / r2_image
+                    Ey -= E * dy_image / r2_image
                 
             start_idx = end_idx
-
-        # 無限遠ノードの影響を計算（オプション）
-        if has_infinity_gnd:
+            
+        # FREEタイプで無限遠ノードがある場合の影響を追加（オプション）
+        if has_infinity_gnd and len(charge_density) > len(actual_charge_density):
             inf_charge = charge_density[-1]
-            # 無限遠からの影響はログ関数で近似できますが、
-            # 実装には理論的な検討が必要です
-            # potential += inf_charge * some_function_of_distance()
+            # ここに無限遠ノードからの電界の影響を計算するコードを追加
+            # 例: 無限遠からの電界は (x,y) に向かう方向に弱く影響
             
         return Ex, Ey
-    
-    
 
